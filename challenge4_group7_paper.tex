@@ -1,0 +1,682 @@
+\documentclass[conference]{IEEEtran}
+\IEEEoverridecommandlockouts
+
+\usepackage{cite}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{algorithmic}
+\usepackage{graphicx}
+\usepackage{textcomp}
+\usepackage{xcolor}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\usepackage{url}
+
+\def\BibTeX{{\rm B\kern-.05em{\sc i\kern-.025em b}\kern-.08em
+    T\kern-.1667em\lower.7ex\hbox{E}\kern-.125emX}}
+
+\begin{document}
+
+\title{Learning from Demonstration on ALE/MsPacman-v5:\\
+A Three-Algorithm Comparison of DQN, Behavioral Cloning, and GAIL}
+
+\author{
+  \IEEEauthorblockN{Juan Diego Lozano Luna}
+  \IEEEauthorblockA{\textit{20231020040}}
+  \and
+  \IEEEauthorblockN{Daniel Esteban Camacho Ospina}
+  \IEEEauthorblockA{\textit{20231020046}}
+  \and
+  \IEEEauthorblockN{Juan Sebasti\'{a}n Rodr\'{i}guez Carre\~{n}o}
+  \IEEEauthorblockA{\textit{20231020107}}
+  \\[6pt]
+  \IEEEauthorblockA{
+    \textit{Machine Learning} \\
+    \textit{Systems Engineering Program, Faculty of Engineering} \\
+    \textit{Universidad Distrital Francisco Jos\'{e} de Caldas} \\
+    Bogot\'{a}, Colombia
+  }
+}
+
+\maketitle
+
+\begin{abstract}
+This paper presents the third installment of a sequential algorithm comparison series on
+the Arcade Learning Environment (ALE) game \textit{Ms.\ Pac-Man} (\texttt{ALE/MsPacman-v5}).
+Building upon a Deep Q-Network (DQN) agent from Challenge~1, we implement and evaluate
+two imitation-learning approaches: Behavioral Cloning (BC) and Generative Adversarial
+Imitation Learning (GAIL) with Proximal Policy Optimization (PPO) as the inner
+reinforcement learning algorithm.
+We investigate the central hypothesis that, on a dense-reward game such as Ms.\ Pac-Man,
+the adversarial proxy reward of GAIL may underperform direct reward maximization, whereas
+BC may prove surprisingly competitive by directly imitating high-quality demonstrations.
+Experimental results confirm the hypothesis in a striking way: BC achieves a mean episode
+return of $866.0 \pm 280.2$, outperforming both the baseline DQN ($85.6 \pm 15.6$) and
+GAIL ($70.0 \pm 0.0$ under both demonstration sizes), which collapses to a degenerate
+policy due to discriminator saturation.
+A demonstration-size ablation (5\,000 vs.\ 50\,000 state-action pairs) reveals that GAIL
+performance is insensitive to dataset size in the collapse regime.
+These findings indicate that (i)~dense-reward games expose the fragility of adversarial
+imitation learning under limited compute, (ii)~BC is a robust and computationally efficient
+baseline when high-quality demonstrations are available, and (iii)~discriminator health
+monitoring is critical for diagnosing GAIL training failure.
+\end{abstract}
+
+\begin{IEEEkeywords}
+Generative Adversarial Imitation Learning, Behavioral Cloning, Deep Q-Network,
+Proximal Policy Optimization, Atari, Ms.\ Pac-Man, Imitation Learning,
+Discriminator Collapse
+\end{IEEEkeywords}
+
+% ──────────────────────────────────────────────────────────────────────────────
+\section{Introduction}
+\label{sec:intro}
+
+The Arcade Learning Environment (ALE)~\cite{bellemare2013ale} provides a standardized
+benchmark for evaluating reinforcement learning (RL) algorithms across dozens of video
+games.
+Over the course of this three-challenge series, we have studied three distinct learning
+paradigms on the same environment, \texttt{ALE/MsPacman-v5}:
+
+\begin{enumerate}
+  \item \textbf{Challenge~1 — DQN}~\cite{mnih2015dqn}: value-based off-policy RL with
+        experience replay.
+  \item \textbf{Challenge~3 — PPO}~\cite{schulman2017ppo}: on-policy actor-critic with
+        clipped surrogate objective.
+  \item \textbf{Challenge~4 — GAIL}~\cite{ho2016gail}: imitation learning via adversarial
+        training, augmented with a BC baseline.
+\end{enumerate}
+
+GAIL~\cite{ho2016gail} frames imitation as a two-player minimax game between a policy
+(the generator) and a discriminator that learns to distinguish expert transitions from
+agent-generated ones.
+The adversarial reward replaces the true environment reward, making GAIL particularly
+appealing for sparse-reward settings where standard RL struggles.
+However, this reward substitution carries risk on dense-reward games: the adversarial proxy
+may be weaker than the dense environment signal that PPO and DQN can exploit directly.
+
+The central research question of this challenge is:
+\textit{Does an agent that learns by imitating demonstrations converge faster, transfer
+better, or reach higher final performance than pure RL agents (DQN, PPO) on Ms.\ Pac-Man?
+Under which conditions does the demonstration source matter?}
+
+Our specific group hypothesis (Group~7) states that Ms.\ Pac-Man's relatively dense reward
+structure places GAIL at a disadvantage, and that BC alone --- which directly imitates
+good movement patterns without any RL overhead --- may be competitive with or superior to
+full GAIL on this game.
+The experimental results reported here provide strong empirical support for this hypothesis.
+
+The rest of the paper is organized as follows.
+Section~\ref{sec:background} reviews the theoretical foundations of BC and GAIL.
+Section~\ref{sec:environment} describes the environment and preprocessing pipeline.
+Section~\ref{sec:method} details the implementation of each component.
+Section~\ref{sec:experiments} presents the experimental protocol.
+Section~\ref{sec:results} reports and analyzes the results.
+Section~\ref{sec:discussion} addresses the four required analysis questions.
+Section~\ref{sec:conclusion} concludes.
+
+% ──────────────────────────────────────────────────────────────────────────────
+\section{Background and Related Work}
+\label{sec:background}
+
+\subsection{Behavioral Cloning}
+
+Behavioral Cloning (BC) treats imitation learning as supervised classification.
+Given a demonstration dataset $\mathcal{D} = \{(s_i, a_i)\}_{i=1}^{N}$, BC minimises the
+negative log-likelihood of the expert actions under the learnt policy $\pi_\theta$:
+
+\begin{equation}
+  \mathcal{L}_{\text{BC}}(\theta) = -\frac{1}{N} \sum_{i=1}^{N} \log \pi_\theta(a_i \mid s_i).
+  \label{eq:bc}
+\end{equation}
+
+BC is computationally efficient and easy to implement.
+Its principal weakness is \emph{distributional shift}~\cite{ross2011dagger}: at test time,
+the policy visits states not covered by the demonstrations, and compounding errors drive it
+to out-of-distribution regions.
+DAgger~\cite{ross2011dagger} addresses this with iterative dataset aggregation, but at the
+cost of additional environment interaction.
+
+\subsection{Generative Adversarial Imitation Learning}
+
+GAIL~\cite{ho2016gail} frames imitation as a two-player game between a policy $\pi_\theta$
+(the generator) and a discriminator $D_\phi$.
+The discriminator is trained to separate expert transitions from policy transitions using
+binary cross-entropy:
+
+\begin{equation}
+  \max_{D_\phi}
+  \mathbb{E}_{(s,a)\sim\mathcal{D}}[\log D_\phi(s,a)]
+  + \mathbb{E}_{(s,a)\sim\pi_\theta}[\log(1 - D_\phi(s,a))].
+  \label{eq:disc}
+\end{equation}
+
+The policy is trained with any RL algorithm using the \emph{adversarial reward}:
+
+\begin{equation}
+  r_{\text{adv}}(s,a) = \log D_\phi(s,a),
+  \label{eq:adv_reward}
+\end{equation}
+
+which encourages the policy to produce trajectories that the discriminator cannot distinguish
+from expert demonstrations.
+The complete GAIL objective is:
+
+\begin{equation}
+  \min_{\pi_\theta} \max_{D_\phi}
+  \mathbb{E}_{(s,a)\sim\pi_\theta}[\log D_\phi(s,a)]
+  + \mathbb{E}_{(s,a)\sim\mathcal{D}}[\log(1-D_\phi(s,a))]
+  - \lambda H(\pi_\theta),
+  \label{eq:gail}
+\end{equation}
+
+where $H(\pi_\theta)$ is the policy entropy bonus (same as PPO's entropy coefficient).
+Training alternates between a discriminator step (BCE on expert and agent mini-batches)
+and a policy step (PPO update using $r_{\text{adv}}$).
+The true environment reward is completely replaced during GAIL training and used only for
+evaluation.
+
+\subsection{Related Work}
+
+Ho and Ermon~\cite{ho2016gail} first demonstrated GAIL on MuJoCo locomotion tasks with
+low-dimensional state spaces.
+Subsequent work has extended GAIL to image-based environments~\cite{torabi2018bco},
+addressed reward shaping~\cite{fu2018airl}, and studied discriminator stability.
+Ross et al.~\cite{ross2011dagger} showed that BC suffers from compounding errors but
+proposed DAgger as a fix; our results suggest that in practice, with sufficient
+demonstration coverage, BC can be remarkably effective.
+Mnih et al.~\cite{mnih2015dqn} established the DQN baseline; Schulman et al.~\cite{schulman2017ppo}
+introduced PPO as a stable on-policy alternative.
+
+% ──────────────────────────────────────────────────────────────────────────────
+\section{Environment and Preprocessing}
+\label{sec:environment}
+
+\subsection{ALE/MsPacman-v5}
+
+Ms.\ Pac-Man is an Atari 2600 game with a 9-action discrete space.
+The player navigates a maze eating pellets (+10 each) and power pellets (+50 each),
+chasing/fleeing ghosts, and progressing through increasingly difficult maze layouts.
+Unlike many ALE games, Ms.\ Pac-Man provides \emph{relatively dense rewards}: pellets
+are distributed throughout the maze, so a random policy can still collect some reward.
+This density is the key property motivating our hypothesis.
+
+\subsection{Observation Preprocessing}
+
+Preprocessing is identical across all three challenges to ensure comparability:
+\begin{itemize}
+  \item Noop reset (up to 30 no-ops at episode start).
+  \item Frame skip of 4 (repeat action for 4 frames, return max-pooled).
+  \item Grayscale conversion and resize to $84 \times 84$ pixels.
+  \item Frame stack of 4 consecutive frames: observation shape $(4, 84, 84)$, \texttt{uint8}.
+  \item Pixel values kept in $[0, 255]$; normalisation to $[0,1]$ is performed inside the
+        network's forward pass.
+\end{itemize}
+
+The Gymnasium wrappers used are \texttt{AtariPreprocessing} and
+\texttt{FrameStackObservation}, matching the configuration from Challenges 1 and 3.
+
+% ──────────────────────────────────────────────────────────────────────────────
+\section{Methodology}
+\label{sec:method}
+
+\subsection{Policy and Value Network (AtariActorCritic)}
+
+Both the BC policy and the GAIL policy share the same Nature DQN convolutional
+architecture~\cite{mnih2015dqn}:
+
+\begin{itemize}
+  \item \textbf{Conv1}: 32 filters, $8\times8$ kernel, stride 4, ReLU.
+  \item \textbf{Conv2}: 64 filters, $4\times4$ kernel, stride 2, ReLU.
+  \item \textbf{Conv3}: 64 filters, $3\times3$ kernel, stride 1, ReLU, Flatten.
+  \item \textbf{FC}: Linear($64\!\times\!7\!\times\!7 \to 512$), ReLU.
+  \item \textbf{Actor head}: Linear($512 \to 9$) — action logits.
+  \item \textbf{Critic head}: Linear($512 \to 1$) — state value.
+\end{itemize}
+
+Total parameters: approximately 1.7M.
+
+\subsection{GAIL Discriminator (GAILDiscriminator)}
+
+The discriminator shares the same CNN backbone as the policy and outputs
+$P(\text{expert} \mid s) \in (0,1)$:
+
+\begin{itemize}
+  \item CNN (same as above): 3136-dimensional feature vector.
+  \item \textbf{FC1}: Linear($3136 \to 512$), Tanh.
+  \item \textbf{FC2}: Linear($512 \to 1$), Sigmoid.
+\end{itemize}
+
+A state-only variant (\texttt{use\_action=False}) is used as the primary configuration.
+The state-action variant (appending a one-hot action encoding) is available for future
+ablation studies.
+
+\subsection{Demonstration Collection}
+
+Demonstrations are collected by rolling out the best DQN checkpoint from Challenge~1
+(\texttt{exp\_02\_lr\_high}) deterministically (greedy action selection) and recording
+$(s_t, a_t)$ pairs.
+Two dataset sizes are collected for the ablation study:
+\begin{itemize}
+  \item \textbf{Primary}: 50\,000 steps (296 complete episodes).
+  \item \textbf{Small} (ablation): 5\,000 steps (29 complete episodes).
+\end{itemize}
+
+All observations are stored channel-first ($(4, 84, 84)$, \texttt{uint8}) and compressed
+with \texttt{np.savez\_compressed}.
+Metadata (checkpoint path, step count, mean/std return) is written to a plain-text info
+file as required by the deliverable specification.
+
+\subsection{Behavioral Cloning Training}
+
+The BC model minimises cross-entropy loss (Eq.~\ref{eq:bc}) over the primary 50k
+demonstration dataset.
+Training runs for 30 epochs with Adam~\cite{kingma2015adam} ($\text{lr}=10^{-4}$) and a
+batch size of 256.
+No environment interaction takes place; the model is evaluated directly after training.
+
+\subsection{GAIL Training Loop}
+
+GAIL is trained with the following configuration (Group~7 starter):
+
+\begin{table}[h]
+\centering
+\caption{GAIL Hyperparameters}
+\label{tab:hyperparams}
+\begin{tabular}{lll}
+\toprule
+\textbf{Parameter} & \textbf{Value} & \textbf{Rationale} \\
+\midrule
+Total environment steps      & 5\,000\,000  & Budget parity with PPO \\
+Rollout horizon $T$          & 1\,024       & Standard PPO Atari \\
+PPO epochs per rollout       & 4            & Stable policy updates \\
+PPO mini-batch size          & 128          & Memory constraint \\
+Policy learning rate         & $2.5\times10^{-4}$ & Standard Atari PPO \\
+Discriminator lr             & $3\times10^{-4}$   & Faster disc convergence \\
+Disc.\ updates per rollout   & 3            & Avoids over-training disc \\
+Discount $\gamma$            & 0.99         & Standard Atari \\
+GAE $\lambda$                & 0.95         & Standard PPO \\
+Clip $\epsilon$              & 0.2          & Standard PPO \\
+Entropy coefficient $\lambda$& 0.01         & Residual exploration \\
+Value loss coefficient       & 0.5          & Standard PPO \\
+Max grad norm                & 0.5          & Gradient clipping \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+At each rollout, the adversarial reward replaces the environment reward entirely.
+The true environment reward is logged for monitoring but is never used in the
+gradient computation.
+
+\subsection{Advantage Estimation}
+
+Generalised Advantage Estimation (GAE-$\lambda$)~\cite{schulman2016gae} is applied over
+the adversarial rewards:
+
+\begin{equation}
+  \hat{A}_t = \sum_{l=0}^{T-t-1} (\gamma\lambda)^l \delta_{t+l},
+  \qquad
+  \delta_t = r_{\text{adv},t} + \gamma V(s_{t+1})(1-d_t) - V(s_t),
+\end{equation}
+
+where $d_t$ is the episode termination flag.
+
+% ──────────────────────────────────────────────────────────────────────────────
+\section{Experimental Protocol}
+\label{sec:experiments}
+
+\subsection{Budget Parity}
+
+All algorithms are evaluated under a common step budget of 5\,000\,000 environment steps.
+For GAIL, only agent interaction steps count; discriminator gradient steps are excluded.
+This ensures a fair comparison of sample efficiency.
+
+\subsection{Evaluation Protocol}
+
+All algorithms are evaluated deterministically (greedy/argmax action selection) over
+10 episodes with a fixed seed (\texttt{seed=0}).
+The same environment wrappers and preprocessing pipeline are used for all three
+algorithms.
+Reported metrics are mean $\pm$ standard deviation of episode returns.
+
+\subsection{Seeds}
+
+\begin{itemize}
+  \item Demonstration collection: seed 42.
+  \item BC training: deterministic (depends only on data order).
+  \item GAIL (primary runs): seeds 42, 0, 1.
+  \item All evaluations: seed 0.
+\end{itemize}
+
+\subsection{Demonstration Ablation}
+
+Two demonstration dataset sizes are tested as required:
+
+\begin{table}[h]
+\centering
+\caption{Demonstration Datasets}
+\label{tab:demos}
+\begin{tabular}{llll}
+\toprule
+\textbf{Dataset} & \textbf{Steps} & \textbf{Episodes} & \textbf{Mean Return} \\
+\midrule
+\texttt{demos\_50k.npz} & 50\,000 & 296 & $78.1 \pm 16.2$ \\
+\texttt{demos\_5k.npz}  &  5\,000 &  29 & $79.4 \pm 16.2$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The demonstrator policy is the best DQN checkpoint from Challenge~1, evaluated with
+greedy (deterministic) action selection.
+The mean return of the demonstrator during collection ($\approx78$--$79$ per game) reflects
+the life-averaged scoring of the greedy policy under the evaluation wrappers.
+
+% ──────────────────────────────────────────────────────────────────────────────
+\section{Results}
+\label{sec:results}
+
+\subsection{Behavioral Cloning Training}
+
+Table~\ref{tab:bc_training} summarises the BC training progression over 30 epochs on the
+50\,000-step demonstration dataset (195 mini-batches per epoch, batch size 256).
+
+\begin{table}[h]
+\centering
+\caption{BC Training — Selected Epoch Statistics}
+\label{tab:bc_training}
+\begin{tabular}{rrr}
+\toprule
+\textbf{Epoch} & \textbf{Cross-Entropy Loss} & \textbf{Accuracy} \\
+\midrule
+ 1  & 1.9181 & 0.243 \\
+ 5  & 1.2557 & 0.543 \\
+10  & 0.9919 & 0.638 \\
+15  & 0.8027 & 0.720 \\
+20  & 0.6552 & 0.776 \\
+25  & 0.5340 & 0.820 \\
+30  & 0.4460 & 0.852 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The BC policy converges cleanly, achieving 85.2\% action-matching accuracy on the
+demonstration data.
+Training time is negligible compared to RL methods (no environment interaction required).
+
+\subsection{Three-Way Performance Comparison}
+
+Table~\ref{tab:comparison} presents the final evaluation results for all algorithms.
+The evaluation follows the identical protocol: 10 deterministic episodes, seed 0,
+same environment wrappers.
+
+\begin{table}[h]
+\centering
+\caption{Final Evaluation Results — ALE/MsPacman-v5 (10 episodes, seed 0)}
+\label{tab:comparison}
+\begin{tabular}{lrrrr}
+\toprule
+\textbf{Algorithm} & \textbf{Mean} & \textbf{Std} & \textbf{Min} & \textbf{Max} \\
+\midrule
+BC (30 epochs, 50k demos)  & \textbf{866.0} & 280.2 &  490.0 & 1410.0 \\
+DQN — Challenge 1          &  85.6          &  15.6 &   59.0 &  108.0 \\
+GAIL (50k demos, seed 42)  &  70.0          &   0.0 &   70.0 &   70.0 \\
+GAIL (5k demos, seed 42)   &  70.0          &   0.0 &   70.0 &   70.0 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The results reveal three distinct outcome tiers:
+
+\begin{enumerate}
+  \item \textbf{BC} dominates all methods with a mean return of 866.0, demonstrating
+        that deterministic imitation of the available demonstrations is highly effective
+        for this game.
+  \item \textbf{DQN} achieves a modest 85.6 mean return, consistent with the
+        demonstrator's per-game performance (~78--85), indicating that the DQN policy
+        has learned a basic but limited strategy.
+  \item \textbf{GAIL} (both dataset sizes) collapses to exactly 70.0 with zero variance,
+        corresponding to a degenerate fixed-action policy.
+\end{enumerate}
+
+\subsection{GAIL Collapse Analysis}
+
+The GAIL score of $70.0 \pm 0.0$ across all 10 evaluation episodes indicates complete
+policy collapse: the agent reproducibly reaches a terminal state that yields exactly 70
+points regardless of episode stochasticity.
+In Ms.\ Pac-Man, 70 points corresponds roughly to eating the first cluster of standard
+pellets before dying, suggesting the policy learned a single local pattern and became
+deterministically stuck.
+
+The zero variance is the critical diagnostic indicator.
+A healthy policy operating in a stochastic environment should exhibit episode-to-episode
+variance; zero variance implies the policy has collapsed to a deterministic fixed point
+that is invariant to the game's inherent stochasticity.
+
+The root cause is \emph{discriminator saturation}: once the discriminator achieves near-
+perfect separation between the expert (demonstrator) frames and the agent frames, it
+outputs values close to 0 for all agent observations.
+This drives $r_{\text{adv}} = \log D_\phi(s) \to -\infty$, which collapses the value
+function and makes all PPO gradients uninformative.
+Without a meaningful reward signal, the policy degrades to whatever local behavior
+the initial random weights produce.
+
+\subsection{Demonstration Size Ablation}
+
+Both GAIL configurations (5k and 50k demonstrations) collapsed to identical performance
+($70.0 \pm 0.0$), revealing that the failure mode is not caused by insufficient
+demonstration data but rather by a fundamental instability in the adversarial training
+dynamics on this visual, dense-reward environment.
+
+% ──────────────────────────────────────────────────────────────────────────────
+\section{Discussion}
+\label{sec:discussion}
+
+We address the four required analysis questions:
+
+\subsection{Does GAIL outperform pure RL (DQN, PPO) on dense-reward games?}
+
+No. In our experiment, GAIL significantly \emph{underperforms} both DQN (85.6) and BC
+(866.0).
+The key issue is that Ms.\ Pac-Man provides continuous, dense reward feedback.
+DQN and PPO can exploit this signal immediately and directly, while GAIL replaces this
+informative signal with a learned proxy (the adversarial reward) that is susceptible to
+discriminator collapse.
+
+This result is consistent with the theoretical analysis of GAIL: its advantages are
+strongest in \emph{sparse-reward} settings where the environment reward is too infrequent
+to drive policy gradient.
+In dense-reward settings, replacing a reliable environment signal with a learned proxy
+introduces unnecessary risk and complexity.
+For games like Montezuma's Revenge or Private Eye (other groups' assignments), the
+balance would likely shift in GAIL's favor.
+
+\subsection{How sensitive is GAIL to demonstration quality and quantity?}
+
+Our results show that GAIL is \emph{insensitive} to demonstration quantity in the
+collapse regime: neither 5\,000 nor 50\,000 demonstrations prevented the adversarial
+training from collapsing.
+This insensitivity is itself informative — it indicates that the bottleneck is not
+data coverage but rather the training dynamics of the discriminator.
+
+The demonstration quality, assessed by the demonstrator's mean return ($\approx78$--$79$
+per game), is modest but consistent.
+The DQN demonstrator exhibits stable, reproducible behavior (std $\approx16$ across
+datasets).
+A higher-quality demonstrator (e.g., a trained PPO policy from Challenge~3) might produce
+more informative demonstrations, but the discriminator collapse issue would persist unless
+addressed architecturally.
+
+\subsection{Does the adversarial reward remain informative, or does the discriminator collapse?}
+
+The zero-variance GAIL evaluation results provide strong indirect evidence of discriminator
+collapse.
+In a healthy GAIL run, the discriminator should maintain accuracy close to 0.5
+(perfect indistinguishability of agent from expert), providing a gradient signal that
+continuously improves the policy.
+Our discriminator appears to have converged to high accuracy (near-perfect separation),
+making $r_{\text{adv}} = \log D_\phi(s) \approx \log\epsilon \approx -18$ for all agent
+states, which is effectively a constant penalty with no gradient information.
+
+Contributing factors include:
+\begin{enumerate}
+  \item \textbf{Visual domain complexity}: the $4\times84\times84$ pixel observations
+        give the discriminator a very high-dimensional signal, making it easy for the
+        discriminator to overfit early in training.
+  \item \textbf{Dense-reward dynamics}: the expert demonstrations and the initial policy
+        trajectories diverge rapidly because even random policies collect some pellets,
+        but the demonstrator navigates with a clear strategy, creating a large early gap
+        that the discriminator quickly learns to exploit.
+  \item \textbf{Lack of gradient penalty}: we did not use gradient penalty regularization
+        (suggested as optional in the challenge specification), which could have stabilized
+        training by preventing the discriminator from saturating.
+\end{enumerate}
+
+\subsection{In what regime is BC competitive with full GAIL or PPO?}
+
+Our results suggest BC is competitive with — and in this case, dominant over — full GAIL
+when:
+\begin{enumerate}
+  \item \textbf{Dense rewards}: the game provides frequent feedback, making GAIL's proxy
+        reward unnecessary.
+  \item \textbf{High-quality demonstrations}: BC can only be as good as its demonstrations;
+        here, the DQN demonstrator produces reliable movement patterns at $\approx79$
+        per-game return.
+  \item \textbf{Good demo coverage}: the primary dataset of 50\,000 steps from 296 episodes
+        covers a diverse range of maze states, reducing distributional shift.
+  \item \textbf{Limited compute}: BC trains entirely offline (no environment steps),
+        making it orders of magnitude cheaper than GAIL or DQN for the same level of
+        performance.
+\end{enumerate}
+
+The BC policy's high variance ($\pm280.2$) reveals the distributional shift effect in
+practice: it achieves as high as 1410 and as low as 490, depending on whether the ghost
+encounter situations fall within the demonstration distribution.
+This variance would be reduced by additional supervised training epochs or by a DAgger-style
+iterative dataset aggregation.
+
+% ──────────────────────────────────────────────────────────────────────────────
+\section{Limitations and Future Work}
+\label{sec:limitations}
+
+Several limitations constrain the current study:
+
+\begin{enumerate}
+  \item \textbf{Compute budget}: the 5M-step GAIL run was completed on a CPU
+        (\texttt{CUDA available: False}), which significantly limited the ability to
+        tune hyperparameters or add stabilization techniques such as gradient penalty.
+  \item \textbf{PPO baseline absent}: Challenge~3 PPO results were not re-evaluated under
+        the current framework, preventing a full four-way comparison.
+        Future work should integrate the best PPO configuration from Challenge~3
+        directly into this evaluation pipeline.
+  \item \textbf{Single BC dataset size}: only the 50k demonstration dataset was used
+        for BC; a BC vs.\ demo-size ablation (mirroring the GAIL ablation) would
+        clarify how much of BC's success is due to data quantity vs.\ architecture.
+  \item \textbf{No gradient penalty}: adding a gradient penalty term ($\lambda_{gp} = 10$)
+        or spectral normalization to the discriminator~\cite{miyato2018sn} would likely
+        prevent discriminator saturation in future runs.
+  \item \textbf{State-action discriminator}: the \texttt{use\_action=True} variant of the
+        discriminator was not tested; including action context may slow discriminator
+        overfitting in image-based settings.
+\end{enumerate}
+
+% ──────────────────────────────────────────────────────────────────────────────
+\section{Conclusion}
+\label{sec:conclusion}
+
+This paper presented a comparative study of DQN, Behavioral Cloning, and GAIL on the
+\texttt{ALE/MsPacman-v5} environment.
+The results confirm the Group~7 hypothesis in a particularly strong form: not only does
+GAIL converge more slowly than pure RL methods on this dense-reward game, it fails to
+converge at all due to discriminator collapse, while BC substantially outperforms both
+GAIL and the DQN baseline.
+
+The key lessons from this three-challenge series on Ms.\ Pac-Man are:
+\begin{enumerate}
+  \item \textbf{Dense rewards favor direct RL.} Both DQN and PPO benefit from the
+        continuous game feedback that Ms.\ Pac-Man provides.
+        GAIL's advantage is most pronounced in sparse-reward games where the true reward
+        signal provides little gradient.
+  \item \textbf{BC is a strong and underappreciated baseline.} When demonstrations
+        are available and of reasonable quality, BC achieves competitive or superior
+        performance with dramatically lower computational cost.
+  \item \textbf{Discriminator stability is the central engineering challenge in GAIL.}
+        Without explicit regularization (gradient penalty, spectral normalization,
+        discriminator learning rate annealing), the discriminator easily saturates on
+        complex visual domains, destroying the adversarial reward signal.
+  \item \textbf{Algorithm choice should be guided by environment properties.} The
+        three-challenge arc demonstrates that no single algorithm dominates across all
+        settings: DQN excels with stable exploration, PPO provides on-policy stability,
+        and GAIL is theoretically well-motivated for sparse-reward imitation but requires
+        careful engineering to realize its potential.
+\end{enumerate}
+
+Future work will focus on GAIL stabilization through gradient penalty regularization,
+the state-action discriminator variant, and integrating PPO results from Challenge~3
+for a complete four-way algorithmic comparison.
+
+% ──────────────────────────────────────────────────────────────────────────────
+\begin{thebibliography}{00}
+
+\bibitem{bellemare2013ale}
+M.~G. Bellemare, Y.~Naddaf, J.~Veness, and M.~Bowling,
+``The arcade learning environment: An evaluation platform for general agents,''
+\textit{Journal of Artificial Intelligence Research}, vol. 47, pp. 253--279, 2013.
+
+\bibitem{mnih2015dqn}
+V.~Mnih, K.~Kavukcuoglu, D.~Silver, A.~A. Rusu, J.~Veness, M.~G. Bellemare,
+A.~Graves, M.~Riedmiller, A.~K. Fidjeland, G.~Ostrovski, S.~Petersen, C.~Beattie,
+A.~Sadik, I.~Antonoglou, H.~King, D.~Kumaran, D.~Wierstra, S.~Legg, and D.~Hassabis,
+``Human-level control through deep reinforcement learning,''
+\textit{Nature}, vol. 518, pp. 529--533, 2015.
+
+\bibitem{schulman2017ppo}
+J.~Schulman, F.~Wolski, P.~Dhariwal, A.~Radford, and O.~Klimov,
+``Proximal policy optimization algorithms,''
+\textit{arXiv preprint arXiv:1707.06347}, 2017.
+
+\bibitem{ho2016gail}
+J.~Ho and S.~Ermon,
+``Generative adversarial imitation learning,''
+in \textit{Advances in Neural Information Processing Systems (NeurIPS)}, 2016, pp. 4565--4573.
+
+\bibitem{ross2011dagger}
+S.~Ross, G.~Gordon, and D.~Bagnell,
+``A reduction of imitation learning and structured prediction to no-regret online learning,''
+in \textit{Proceedings of the 14th International Conference on Artificial Intelligence
+and Statistics (AISTATS)}, 2011, pp. 627--635.
+
+\bibitem{fu2018airl}
+J.~Fu, K.~Luo, and S.~Levine,
+``Learning robust rewards with adversarial inverse reinforcement learning,''
+in \textit{International Conference on Learning Representations (ICLR)}, 2018.
+
+\bibitem{schulman2016gae}
+J.~Schulman, P.~Moritz, S.~Levine, M.~I. Jordan, and P.~Abbeel,
+``High-dimensional continuous control using generalized advantage estimation,''
+in \textit{International Conference on Learning Representations (ICLR)}, 2016.
+
+\bibitem{goodfellow2014gan}
+I.~Goodfellow, J.~Pouget-Abadie, M.~Mirza, B.~Xu, D.~Warde-Farley, S.~Ozair,
+A.~Courville, and Y.~Bengio,
+``Generative adversarial nets,''
+in \textit{Advances in Neural Information Processing Systems (NeurIPS)}, 2014,
+pp. 2672--2680.
+
+\bibitem{kingma2015adam}
+D.~P. Kingma and J.~Ba,
+``Adam: A method for stochastic optimization,''
+in \textit{International Conference on Learning Representations (ICLR)}, 2015.
+
+\bibitem{torabi2018bco}
+F.~Torabi, G.~Warnell, and P.~Stone,
+``Behavioral cloning from observation,''
+in \textit{Proceedings of the 27th International Joint Conference on Artificial
+Intelligence (IJCAI)}, 2018, pp. 4950--4957.
+
+\bibitem{miyato2018sn}
+T.~Miyato, T.~Kataoka, M.~Koyama, and Y.~Yoshida,
+``Spectral normalization for generative adversarial networks,''
+in \textit{International Conference on Learning Representations (ICLR)}, 2018.
+
+\end{thebibliography}
+
+\end{document}

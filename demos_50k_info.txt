@@ -1,0 +1,7 @@
+source_checkpoint : ../Challenge_1/models/mspacman_dqn.zip
+env_id            : ALE/MsPacman-v5
+n_steps           : 50000
+seed              : 42
+full_episodes     : 296
+mean_return       : 78.10
+std_return        : 16.22

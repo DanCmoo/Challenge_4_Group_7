@@ -1,0 +1,19 @@
+GUION_VIDEO.md
+  s_f80714945b4410::t_1f3adac7bc7cb8 1-110
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "ccbc2229c98112f958cc11f6184a55de166026f8",
+  "prompts": {},
+  "sessions": {
+    "s_f80714945b4410": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c7d94e7b-46b4-4457-8f6e-ba8588debc8d",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "DanCmoo <dankurso845@gmail.com>"
+    }
+  }
+}

@@ -1,0 +1,46 @@
+pyproject.toml
+  s_ff07eea22a7017::t_58ba2715303a6e 1-25
+Challenge4.md
+  h_5ef9474d151122 1-838
+challenge4_group7.ipynb
+  s_ff07eea22a7017::t_d9003ff842f1ce 5,31,40,83,94,153,174,273,291,344,364,437,514,529,600,657,677,854,1369,1883,1898,1978,2097
+  s_ff07eea22a7017::t_8b171e6a2ee828 1-4,6,28-30,32,36-38,41-52,80-82,84,90-92,95-104,150-152,154,170-172,175-193,270-272,274,287-289,292-299,341-343,345,360-362,365-366,433-435,438-480,511-513,515,525-527,530-531,596-598,601-639,654-656,658,673-675,678-679,850-852,855-1367,1370-1882,1884,1894-1896,1899-1900,1974-1976,1979-2035,2094-2096,2098,2122-2125,2127-2137,2141-2145
+  s_ff07eea22a7017::t_1d322b35eb405c 34
+CHECKLIST.md
+  s_ff07eea22a7017::t_50c9169cec6453 1-130
+challenge4_group7_paper.tex
+  s_f80714945b4410::t_8db88cf650f961 23-31,33
+  s_f80714945b4410::t_9aef462b822759 1-22,32,35,37-682
+  s_f80714945b4410::t_6ef37953515b38 34,36
+README.md
+  s_ff07eea22a7017::t_621b3be826680a 1-156
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "e848d1501b892e467bdfaab3a957712d3cf7c8ae",
+  "prompts": {},
+  "humans": {
+    "h_5ef9474d151122": {
+      "author": "DanCmoo <dankurso845@gmail.com>"
+    }
+  },
+  "sessions": {
+    "s_f80714945b4410": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c7d94e7b-46b4-4457-8f6e-ba8588debc8d",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "DanCmoo <dankurso845@gmail.com>"
+    },
+    "s_ff07eea22a7017": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "95af8298-9ba8-4468-b583-3b2673245be1",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "DanCmoo <dankurso845@gmail.com>"
+    }
+  }
+}
